@@ -1,0 +1,25 @@
+# Core LLM SDK (Groq)
+groq>=0.30.0
+
+# Data validation / structured outputs
+pydantic>=2.7.0
+
+# Financial + market data
+yfinance>=0.2.40
+pandas>=2.2.0
+numpy>=1.26.0
+
+# News / sentiment search (either works; app auto-detects which is installed)
+ddgs>=6.0.0
+# duckduckgo-search>=6.0.0   # legacy package name — uncomment if `ddgs` unavailable
+tavily-python>=0.5.0         # optional: used automatically if TAVILY_API_KEY is set
+
+# Resilience
+tenacity>=8.2.3
+
+# Dashboard
+streamlit>=1.36.0
+plotly>=5.22.0
+
+# Env var loading
+python-dotenv>=1.0.1
