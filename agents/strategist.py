@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Optional
 
 from config import MODEL_CONFIG
 from schemas import (
@@ -17,6 +18,7 @@ from schemas import (
     TechnicalAnalysisOutput,
     MacroFundamentalsOutput,
     SentimentNewsOutput,
+    OilGasAnalysisOutput,
     RiskManagerOutput,
     DebateRebuttal,
     DebateRebuttalList,
@@ -33,15 +35,19 @@ def _specialists_block(
     macro: MacroFundamentalsOutput,
     sentiment: SentimentNewsOutput,
     risk: RiskManagerOutput,
+    oil_gas: Optional[OilGasAnalysisOutput] = None,
 ) -> str:
     # Compact digests (trimmed reasoning, no indentation) keep the prompt well inside the
     # per-minute token budget of Groq's free tier.
-    return (
-        f"Technical_Analyst_Agent: {digest_output(technical)}\n\n"
-        f"Macro_Fundamentals_Agent: {digest_output(macro)}\n\n"
-        f"Sentiment_News_Agent: {digest_output(sentiment)}\n\n"
-        f"Risk_Manager_Agent: {digest_output(risk)}"
-    )
+    parts = [
+        f"Technical_Analyst_Agent: {digest_output(technical)}",
+        f"Macro_Fundamentals_Agent: {digest_output(macro)}",
+        f"Sentiment_News_Agent: {digest_output(sentiment)}",
+    ]
+    if oil_gas is not None:
+        parts.append(f"Oil_Gas_Analyst_Agent: {digest_output(oil_gas)}")
+    parts.append(f"Risk_Manager_Agent: {digest_output(risk)}")
+    return "\n\n".join(parts)
 
 
 def run_debate_turn(
@@ -49,8 +55,9 @@ def run_debate_turn(
     macro: MacroFundamentalsOutput,
     sentiment: SentimentNewsOutput,
     risk: RiskManagerOutput,
+    oil_gas: Optional[OilGasAnalysisOutput] = None,
 ) -> list[DebateRebuttal]:
-    user_content = _specialists_block(technical, macro, sentiment, risk)
+    user_content = _specialists_block(technical, macro, sentiment, risk, oil_gas=oil_gas)
     try:
         result = run_structured_agent(
             model=MODEL_CONFIG.pro_model,
@@ -78,9 +85,10 @@ def run_synthesis(
     sentiment: SentimentNewsOutput,
     risk: RiskManagerOutput,
     debate: list[DebateRebuttal],
+    oil_gas: Optional[OilGasAnalysisOutput] = None,
 ) -> SynthesisReport:
     debate_json = json.dumps([d.model_dump() for d in debate], separators=(",", ":"), ensure_ascii=False)
-    user_content = f"{_specialists_block(technical, macro, sentiment, risk)}\n\nDebate transcript: {debate_json}"
+    user_content = f"{_specialists_block(technical, macro, sentiment, risk, oil_gas=oil_gas)}\n\nDebate transcript: {debate_json}"
     try:
         return run_structured_agent(
             model=MODEL_CONFIG.pro_model,

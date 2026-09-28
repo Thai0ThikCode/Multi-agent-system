@@ -27,7 +27,7 @@ from schemas import (
     AgentLogEntry,
     RawData,
 )
-from tools import market_data, technical_indicators, news_sentiment
+from tools import market_data, technical_indicators, news_sentiment, pvoil_crawler
 from agents import specialists, strategist
 from storage import database
 
@@ -44,20 +44,34 @@ def _notify(callback: ProgressCallback, stage: str, state: AgentState) -> None:
             logger.exception("Progress callback raised — ignoring so the run continues.")
 
 
-async def _fetch_raw_data() -> RawData:
+async def _fetch_raw_data(custom_pvoil_html: Optional[str] = None) -> RawData:
     """Runs all data collection concurrently in worker threads (the underlying
-    libraries — yfinance, ddgs — are synchronous/blocking)."""
+    libraries — yfinance, ddgs, requests — are synchronous/blocking)."""
     history_task = asyncio.to_thread(market_data.fetch_gold_history, DATA_CONFIG.lookback_days)
+    oil_task = asyncio.to_thread(market_data.fetch_oil_history, DATA_CONFIG.lookback_days)
+    gas_task = asyncio.to_thread(market_data.fetch_gas_history, DATA_CONFIG.lookback_days)
     macro_task = asyncio.to_thread(market_data.fetch_macro_snapshot)
     news_task = asyncio.to_thread(news_sentiment.fetch_news)
+    pvoil_task = asyncio.to_thread(pvoil_crawler.crawl_pvoil_fuel_prices, None, custom_pvoil_html)
 
-    history, macro_snapshot, (news_items, news_warnings) = await asyncio.gather(
-        history_task, macro_task, news_task
+    (
+        history,
+        oil_history,
+        gas_history,
+        macro_snapshot,
+        (news_items, news_warnings),
+        (domestic_fuel_snapshot, pvoil_warnings),
+    ) = await asyncio.gather(
+        history_task, oil_task, gas_task, macro_task, news_task, pvoil_task
     )
 
-    warnings = list(news_warnings)
+    warnings = list(news_warnings) + list(pvoil_warnings)
     if not history:
         warnings.append("Gold price history could not be retrieved — technical analysis will be degraded.")
+    if not oil_history:
+        warnings.append("WTI Crude Oil history could not be retrieved from Yahoo Finance.")
+    if not gas_history:
+        warnings.append("Natural Gas history could not be retrieved from Yahoo Finance.")
 
     technical_snapshot = technical_indicators.compute_technical_snapshot(history)
     if technical_snapshot is None:
@@ -65,8 +79,11 @@ async def _fetch_raw_data() -> RawData:
 
     return RawData(
         gold_price_history=history,
+        oil_price_history=oil_history,
+        gas_price_history=gas_history,
         technical_snapshot=technical_snapshot,
         macro_snapshot=macro_snapshot,
+        domestic_fuel_snapshot=domestic_fuel_snapshot,
         news_items=news_items,
         data_warnings=warnings,
     )
@@ -75,6 +92,7 @@ async def _fetch_raw_data() -> RawData:
 async def run_pipeline(
     db_path: Optional[str] = None,
     on_progress: ProgressCallback = None,
+    custom_pvoil_html: Optional[str] = None,
 ) -> AgentState:
     """Runs the full multi-agent pipeline end-to-end and returns the final,
     fully-populated AgentState (also persisted to SQLite as it progresses)."""
@@ -86,7 +104,7 @@ async def run_pipeline(
     # ---- Stage 1: data collection -----------------------------------------
     _notify(on_progress, "fetching_data", state)
     try:
-        state.raw_data = await _fetch_raw_data()
+        state.raw_data = await _fetch_raw_data(custom_pvoil_html=custom_pvoil_html)
     except Exception as e:
         logger.exception("Fatal error during data fetching.")
         state.errors.append(f"Data fetching failed: {e}")
@@ -106,9 +124,15 @@ async def run_pipeline(
     technical_task = asyncio.to_thread(specialists.run_technical_analyst, ingestion_brief, state.raw_data)
     macro_task = asyncio.to_thread(specialists.run_macro_fundamentals, ingestion_brief, state.raw_data)
     sentiment_task = asyncio.to_thread(specialists.run_sentiment_news, ingestion_brief, state.raw_data)
+    oil_gas_task = asyncio.to_thread(specialists.run_oil_gas_analyst, ingestion_brief, state.raw_data)
 
-    state.technical_output, state.macro_output, state.sentiment_output = await asyncio.gather(
-        technical_task, macro_task, sentiment_task
+    (
+        state.technical_output,
+        state.macro_output,
+        state.sentiment_output,
+        state.oil_gas_output,
+    ) = await asyncio.gather(
+        technical_task, macro_task, sentiment_task, oil_gas_task
     )
 
     _log(state, "Technical_Analyst_Agent", "analysis", state.technical_output.reasoning_chain,
@@ -117,12 +141,18 @@ async def run_pipeline(
          db_path, final_output=state.macro_output.model_dump())
     _log(state, "Sentiment_News_Agent", "analysis", state.sentiment_output.reasoning_chain,
          db_path, final_output=state.sentiment_output.model_dump())
+    _log(state, "Oil_Gas_Analyst_Agent", "analysis", state.oil_gas_output.reasoning_chain,
+         db_path, final_output=state.oil_gas_output.model_dump())
     database.upsert_run_state(state, db_path)
     _notify(on_progress, "analyzed", state)
 
     # ---- Stage 4: risk review ----------------------------------------------
     state.risk_output = await asyncio.to_thread(
-        specialists.run_risk_manager, state.technical_output, state.macro_output, state.sentiment_output
+        specialists.run_risk_manager,
+        state.technical_output,
+        state.macro_output,
+        state.sentiment_output,
+        state.oil_gas_output,
     )
     _log(state, "Risk_Manager_Agent", "analysis", state.risk_output.reasoning_chain,
          db_path, final_output=state.risk_output.model_dump())
@@ -133,7 +163,11 @@ async def run_pipeline(
     _notify(on_progress, "debating", state)
     state.debate_transcript = await asyncio.to_thread(
         strategist.run_debate_turn,
-        state.technical_output, state.macro_output, state.sentiment_output, state.risk_output,
+        state.technical_output,
+        state.macro_output,
+        state.sentiment_output,
+        state.risk_output,
+        state.oil_gas_output,
     )
     for rebuttal in state.debate_transcript:
         _log(
@@ -149,8 +183,12 @@ async def run_pipeline(
     _notify(on_progress, "synthesizing", state)
     state.synthesis_report = await asyncio.to_thread(
         strategist.run_synthesis,
-        state.technical_output, state.macro_output, state.sentiment_output,
-        state.risk_output, state.debate_transcript,
+        state.technical_output,
+        state.macro_output,
+        state.sentiment_output,
+        state.risk_output,
+        state.debate_transcript,
+        state.oil_gas_output,
     )
     _log(state, "Lead_Strategist_Agent", "synthesis", state.synthesis_report.reasoning_chain,
          db_path, final_output=state.synthesis_report.model_dump())
@@ -183,7 +221,11 @@ def _log(
         logger.exception("Failed to persist agent log entry (continuing).")
 
 
-def run_pipeline_sync(db_path: Optional[str] = None, on_progress: ProgressCallback = None) -> AgentState:
+def run_pipeline_sync(
+    db_path: Optional[str] = None,
+    on_progress: ProgressCallback = None,
+    custom_pvoil_html: Optional[str] = None,
+) -> AgentState:
     """Convenience sync wrapper for callers (e.g. Streamlit) that are not
     themselves running inside an event loop."""
-    return asyncio.run(run_pipeline(db_path=db_path, on_progress=on_progress))
+    return asyncio.run(run_pipeline(db_path=db_path, on_progress=on_progress, custom_pvoil_html=custom_pvoil_html))

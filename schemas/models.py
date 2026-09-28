@@ -68,11 +68,28 @@ class NewsItem(BaseModel):
     snippet: str = ""
 
 
+class FuelPriceItem(BaseModel):
+    product_name: str
+    zone_1_price: float
+    zone_2_price: float
+    unit: str = "VNĐ/lít"
+
+
+class DomesticFuelSnapshot(BaseModel):
+    effective_date: str = ""
+    source: str = "PVOIL"
+    items: list[FuelPriceItem] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class RawData(BaseModel):
     fetched_at: str = Field(default_factory=utc_now_iso)
     gold_price_history: list[PricePoint] = Field(default_factory=list)
+    oil_price_history: list[PricePoint] = Field(default_factory=list)
+    gas_price_history: list[PricePoint] = Field(default_factory=list)
     technical_snapshot: Optional[TechnicalSnapshot] = None
     macro_snapshot: Optional[MacroSnapshot] = None
+    domestic_fuel_snapshot: Optional[DomesticFuelSnapshot] = None
     news_items: list[NewsItem] = Field(default_factory=list)
     data_warnings: list[str] = Field(default_factory=list)
 
@@ -113,6 +130,20 @@ class MacroFundamentalsOutput(AgentOpinionBase):
 class SentimentNewsOutput(AgentOpinionBase):
     sentiment_score: float = Field(ge=-1.0, le=1.0, description="-1 fully bearish, +1 fully bullish.")
     influential_headlines: list[str] = Field(default_factory=list)
+
+
+class OilGasAnalysisOutput(AgentOpinionBase):
+    crude_trend: str = Field(description="Trend and price assessment of WTI Crude Oil.")
+    natural_gas_trend: str = Field(description="Trend and price assessment of Natural Gas.")
+    domestic_fuel_assessment: str = Field(
+        description="Analysis of domestic fuel prices (PVOIL RON 95, E5, Diesel) and cycle expectations."
+    )
+    macro_inflation_impact: str = Field(description="Impact of energy prices on inflation expectations and real yields.")
+    key_price_levels: dict[str, float] = Field(default_factory=dict)
+    executive_summary: str = Field(
+        default="",
+        description="A concise 2-4 sentence plain-English summary of the oil and gas outlook and inflation implications.",
+    )
 
 
 class RiskFlag(BaseModel):
@@ -178,6 +209,7 @@ class AgentState(BaseModel):
     technical_output: Optional[TechnicalAnalysisOutput] = None
     macro_output: Optional[MacroFundamentalsOutput] = None
     sentiment_output: Optional[SentimentNewsOutput] = None
+    oil_gas_output: Optional[OilGasAnalysisOutput] = None
     risk_output: Optional[RiskManagerOutput] = None
     debate_transcript: list[DebateRebuttal] = Field(default_factory=list)
     synthesis_report: Optional[SynthesisReport] = None
