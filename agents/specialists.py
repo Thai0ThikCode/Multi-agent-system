@@ -19,6 +19,7 @@ from schemas import (
     TechnicalAnalysisOutput,
     MacroFundamentalsOutput,
     SentimentNewsOutput,
+    OilGasAnalysisOutput,
     RiskManagerOutput,
 )
 from agents.base_agent import run_structured_agent, run_text_agent, fallback_instance, digest_output
@@ -27,6 +28,7 @@ from agents.prompts import (
     TECHNICAL_ANALYST_PROMPT,
     MACRO_FUNDAMENTALS_PROMPT,
     SENTIMENT_NEWS_PROMPT,
+    OIL_GAS_ANALYST_PROMPT,
     RISK_MANAGER_PROMPT,
 )
 
@@ -84,6 +86,19 @@ def _format_ingestion_brief_locally(raw_data: RawData) -> str:
             lines.append(f"  macro note: {note}")
     else:
         lines.append("Macro: UNAVAILABLE")
+
+    # Global Energy Commodities
+    if raw_data.oil_price_history:
+        lines.append(f"WTI Crude (CL=F): latest_close=${raw_data.oil_price_history[-1].close:.2f} ({len(raw_data.oil_price_history)} candles)")
+    if raw_data.gas_price_history:
+        lines.append(f"Natural Gas (NG=F): latest_close=${raw_data.gas_price_history[-1].close:.2f} ({len(raw_data.gas_price_history)} candles)")
+
+    # Domestic Vietnamese Retail Fuel (PVOIL)
+    if raw_data.domestic_fuel_snapshot and raw_data.domestic_fuel_snapshot.items:
+        snap = raw_data.domestic_fuel_snapshot
+        lines.append(f"Domestic Fuel (PVOIL - Effective {snap.effective_date}):")
+        for it in snap.items[:5]:
+            lines.append(f"  - {it.product_name}: Vùng 1={it.zone_1_price:,.0f} {it.unit}, Vùng 2={it.zone_2_price:,.0f} {it.unit}")
 
     lines.append(f"News headlines ({len(raw_data.news_items)}):")
     for item in raw_data.news_items[:10]:
@@ -188,16 +203,71 @@ def run_sentiment_news(ingestion_brief: str, raw_data: RawData) -> SentimentNews
         )
 
 
+def run_oil_gas_analyst(ingestion_brief: str, raw_data: RawData) -> OilGasAnalysisOutput:
+    oil_summary = "UNAVAILABLE"
+    if raw_data.oil_price_history:
+        last = raw_data.oil_price_history[-1]
+        recent_15 = raw_data.oil_price_history[-15:]
+        min_p = min(p.low for p in recent_15)
+        max_p = max(p.high for p in recent_15)
+        oil_summary = f"WTI Crude (CL=F) latest_close: ${last.close:.2f} | 15-day range: [${min_p:.2f} - ${max_p:.2f}]"
+
+    gas_summary = "UNAVAILABLE"
+    if raw_data.gas_price_history:
+        last_g = raw_data.gas_price_history[-1]
+        gas_summary = f"Natural Gas (NG=F) latest_close: ${last_g.close:.2f}"
+
+    fuel_summary = "UNAVAILABLE"
+    if raw_data.domestic_fuel_snapshot and raw_data.domestic_fuel_snapshot.items:
+        snap = raw_data.domestic_fuel_snapshot
+        items_str = ", ".join(f"{it.product_name}: {it.zone_1_price:,.0f} VNĐ" for it in snap.items[:4])
+        fuel_summary = f"PVOIL Domestic Fuel (Effective {snap.effective_date}): {items_str}"
+
+    user_content = (
+        f"Normalized data brief:\n{ingestion_brief}\n\n"
+        f"Crude Oil Market:\n{oil_summary}\n\n"
+        f"Natural Gas Market:\n{gas_summary}\n\n"
+        f"Vietnam Domestic Fuel (PVOIL):\n{fuel_summary}\n\n"
+        f"Macro snapshot:\n{_snapshot_json(raw_data.macro_snapshot)}"
+    )
+    try:
+        return run_structured_agent(
+            model=MODEL_CONFIG.fast_model,
+            system_instruction=OIL_GAS_ANALYST_PROMPT,
+            user_content=user_content,
+            schema=OilGasAnalysisOutput,
+            temperature=MODEL_CONFIG.temperature_analysis,
+        )
+    except Exception as e:
+        logger.error("Oil_Gas_Analyst_Agent failed after retries: %s", e)
+        return fallback_instance(
+            OilGasAnalysisOutput,
+            reasoning_chain=[f"Agent call failed: {e}"],
+            direction=Direction.SIDEWAYS,
+            confidence=0.0,
+            crude_trend="Data unavailable or call failed",
+            natural_gas_trend="Data unavailable or call failed",
+            domestic_fuel_assessment="PVOIL analysis unavailable",
+            macro_inflation_impact="Energy impact assessment unavailable",
+            executive_summary="Energy market analysis is unavailable because the model call failed; domestic fuel and inflation implications remain uncertain.",
+        )
+
+
 def run_risk_manager(
     technical: TechnicalAnalysisOutput,
     macro: MacroFundamentalsOutput,
     sentiment: SentimentNewsOutput,
+    oil_gas: Optional[OilGasAnalysisOutput] = None,
 ) -> RiskManagerOutput:
-    user_content = (
-        f"Technical_Analyst_Agent conclusion: {digest_output(technical)}\n\n"
-        f"Macro_Fundamentals_Agent conclusion: {digest_output(macro)}\n\n"
-        f"Sentiment_News_Agent conclusion: {digest_output(sentiment)}"
-    )
+    parts = [
+        f"Technical_Analyst_Agent conclusion: {digest_output(technical)}",
+        f"Macro_Fundamentals_Agent conclusion: {digest_output(macro)}",
+        f"Sentiment_News_Agent conclusion: {digest_output(sentiment)}",
+    ]
+    if oil_gas is not None:
+        parts.append(f"Oil_Gas_Analyst_Agent conclusion: {digest_output(oil_gas)}")
+
+    user_content = "\n\n".join(parts)
     try:
         return run_structured_agent(
             model=MODEL_CONFIG.fast_model,

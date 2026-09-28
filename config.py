@@ -45,6 +45,8 @@ class DataConfig:
     dxy_ticker: str = "DX-Y.NYB"       # US Dollar Index
     yield_ticker: str = "^TNX"         # US 10-Year Treasury Yield
     oil_ticker: str = "CL=F"           # WTI Crude Oil
+    gas_ticker: str = "NG=F"           # Natural Gas futures
+    pvoil_oil_url: str = os.getenv("PVOIL_OIL_URL", "https://www.pvoil.com.vn/tin-gia-xang-dau")
     lookback_days: int = 180
     news_max_results: int = 12
     news_query_terms: tuple = (

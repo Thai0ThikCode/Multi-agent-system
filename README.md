@@ -1,4 +1,4 @@
-# XAU/USD Multi-Agent Forecasting System
+# XAU/USD and Oil & Gas Multi-Agent Forecasting System
 
 A production-grade, modular multi-agent pipeline that forecasts gold (XAU/USD)
 price trends using the Groq API. Specialist agents analyze technicals,

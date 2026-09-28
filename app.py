@@ -115,10 +115,67 @@ def render_executive_summary(state: AgentState) -> None:
                 st.markdown(f"- {d}")
 
 
+def render_oil_gas_section(state: AgentState) -> None:
+    raw = state.raw_data
+    if not raw:
+        return
+
+    if state.oil_gas_output and state.oil_gas_output.executive_summary:
+        st.markdown(f"**Executive Summary:** {state.oil_gas_output.executive_summary}")
+
+    st.markdown("#### 🇻🇳 Domestic Vietnamese Retail Fuel (PVOIL)")
+    if raw.domestic_fuel_snapshot and raw.domestic_fuel_snapshot.items:
+        snap = raw.domestic_fuel_snapshot
+        st.caption(f"**Source:** {snap.source} | **Effective Date:** {snap.effective_date}")
+
+        table_rows = [
+            {
+                "Product / Mặt hàng": item.product_name,
+                "Zone 1 / Vùng 1": f"{item.zone_1_price:,.0f} {item.unit}",
+                "Zone 2 / Vùng 2": f"{item.zone_2_price:,.0f} {item.unit}",
+            }
+            for item in snap.items
+        ]
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Domestic fuel data is currently unavailable.")
+
+    # Global Energy Price Charts
+    st.markdown("#### 🌐 Global Energy Commodities (WTI Crude & Natural Gas)")
+    col_oil, col_gas = st.columns(2)
+
+    with col_oil:
+        if raw.oil_price_history:
+            df_oil = pd.DataFrame([p.model_dump() for p in raw.oil_price_history])
+            df_oil["date"] = pd.to_datetime(df_oil["date"])
+            latest_oil = raw.oil_price_history[-1].close
+            st.metric("WTI Crude Oil (CL=F)", f"${latest_oil:.2f}/bbl")
+            fig_oil = go.Figure()
+            fig_oil.add_trace(go.Scatter(x=df_oil["date"], y=df_oil["close"], mode="lines", name="WTI Crude", line=dict(color="#ea580c")))
+            fig_oil.update_layout(height=280, margin=dict(l=20, r=20, t=20, b=20), xaxis_title="Date", yaxis_title="USD / bbl")
+            st.plotly_chart(fig_oil, use_container_width=True)
+        else:
+            st.info("WTI Crude history unavailable.")
+
+    with col_gas:
+        if raw.gas_price_history:
+            df_gas = pd.DataFrame([p.model_dump() for p in raw.gas_price_history])
+            df_gas["date"] = pd.to_datetime(df_gas["date"])
+            latest_gas = raw.gas_price_history[-1].close
+            st.metric("Natural Gas (NG=F)", f"${latest_gas:.2f}/MMBtu")
+            fig_gas = go.Figure()
+            fig_gas.add_trace(go.Scatter(x=df_gas["date"], y=df_gas["close"], mode="lines", name="Natural Gas", line=dict(color="#0284c7")))
+            fig_gas.update_layout(height=280, margin=dict(l=20, r=20, t=20, b=20), xaxis_title="Date", yaxis_title="USD / MMBtu")
+            st.plotly_chart(fig_gas, use_container_width=True)
+        else:
+            st.info("Natural gas history unavailable.")
+
+
 def render_agent_reasoning(state: AgentState) -> None:
     specialists = [
         ("📈 Technical Analyst", state.technical_output),
         ("💵 Macro Fundamentals", state.macro_output),
+        ("🛢️ Oil & Gas Analyst", state.oil_gas_output),
         ("📰 Sentiment & News", state.sentiment_output),
         ("🛡️ Risk Manager", state.risk_output),
     ]
@@ -172,6 +229,7 @@ def render_state(state: AgentState) -> None:
     render_executive_summary(state)
     st.subheader("Market Data")
     render_price_chart(state)
+    render_oil_gas_section(state)
     st.subheader("Agent Reasoning")
     render_agent_reasoning(state)
     st.subheader("Live Debate Log")
@@ -180,7 +238,7 @@ def render_state(state: AgentState) -> None:
 
 
 def main() -> None:
-    st.title("🪙 XAU/USD Multi-Agent Forecasting System")
+    st.title("🪙 XAU/USD and Oil & Gas Multi-Agent Forecasting System")
     st.caption(
         "Multi-agent Groq pipeline: Technical, Macro, Sentiment, and Risk specialists debate "
         "and synthesize a gold price forecast. **Not financial advice** — for research/education only."

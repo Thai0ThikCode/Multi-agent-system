@@ -44,15 +44,7 @@ def _download(ticker: str, period_days: int) -> pd.DataFrame:
     return df
 
 
-def fetch_gold_history(period_days: Optional[int] = None) -> list[PricePoint]:
-    """Fetch OHLCV history for the configured gold ticker."""
-    period_days = period_days or DATA_CONFIG.lookback_days
-    try:
-        df = _download(DATA_CONFIG.gold_ticker, period_days)
-    except Exception as e:
-        logger.warning("Gold history fetch failed for %s: %s", DATA_CONFIG.gold_ticker, e)
-        return []
-
+def _history_from_dataframe(df: pd.DataFrame) -> list[PricePoint]:
     points: list[PricePoint] = []
     for idx, row in df.iterrows():
         try:
@@ -71,6 +63,39 @@ def fetch_gold_history(period_days: Optional[int] = None) -> list[PricePoint]:
     return points
 
 
+def fetch_gold_history(period_days: Optional[int] = None) -> list[PricePoint]:
+    """Fetch OHLCV history for the configured gold ticker."""
+    period_days = period_days or DATA_CONFIG.lookback_days
+    try:
+        df = _download(DATA_CONFIG.gold_ticker, period_days)
+        return _history_from_dataframe(df)
+    except Exception as e:
+        logger.warning("Gold history fetch failed for %s: %s", DATA_CONFIG.gold_ticker, e)
+        return []
+
+
+def fetch_oil_history(period_days: Optional[int] = None) -> list[PricePoint]:
+    """Fetch OHLCV history for WTI Crude Oil."""
+    period_days = period_days or DATA_CONFIG.lookback_days
+    try:
+        df = _download(DATA_CONFIG.oil_ticker, period_days)
+        return _history_from_dataframe(df)
+    except Exception as e:
+        logger.warning("Crude oil history fetch failed for %s: %s", DATA_CONFIG.oil_ticker, e)
+        return []
+
+
+def fetch_gas_history(period_days: Optional[int] = None) -> list[PricePoint]:
+    """Fetch OHLCV history for Natural Gas futures."""
+    period_days = period_days or DATA_CONFIG.lookback_days
+    try:
+        df = _download(DATA_CONFIG.gas_ticker, period_days)
+        return _history_from_dataframe(df)
+    except Exception as e:
+        logger.warning("Natural gas history fetch failed for %s: %s", DATA_CONFIG.gas_ticker, e)
+        return []
+
+
 def _pct_change(series: pd.Series, periods: int) -> Optional[float]:
     if len(series) <= periods:
         return None
@@ -84,25 +109,37 @@ def _pct_change(series: pd.Series, periods: int) -> Optional[float]:
         return None
 
 
+def _diff_change(series: pd.Series, periods: int) -> Optional[float]:
+    """Absolute difference (useful for bond yields)."""
+    if len(series) <= periods:
+        return None
+    try:
+        old = float(series.iloc[-periods - 1])
+        new = float(series.iloc[-1])
+        return round(new - old, 3)
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
 def fetch_macro_snapshot(period_days: Optional[int] = None) -> MacroSnapshot:
     """Fetch DXY, 10Y yield, and crude oil, and derive short-term change metrics."""
     period_days = period_days or max(DATA_CONFIG.lookback_days, 30)
     snapshot = MacroSnapshot()
     notes: list[str] = []
 
-    def _safe_last_and_change(ticker: str):
+    def _safe_last_and_change(ticker: str, is_diff: bool = False):
         try:
             df = _download(ticker, period_days)
             close = df["Close"].dropna()
             last = float(close.iloc[-1])
-            chg = _pct_change(close, 5)
+            chg = _diff_change(close, 5) if is_diff else _pct_change(close, 5)
             return last, chg
         except Exception as e:
             notes.append(f"Failed to fetch {ticker}: {e}")
             return None, None
 
-    snapshot.dxy_last, snapshot.dxy_change_pct_5d = _safe_last_and_change(DATA_CONFIG.dxy_ticker)
-    snapshot.us10y_yield_last, snapshot.us10y_change_5d = _safe_last_and_change(DATA_CONFIG.yield_ticker)
-    snapshot.crude_oil_last, snapshot.crude_oil_change_pct_5d = _safe_last_and_change(DATA_CONFIG.oil_ticker)
+    snapshot.dxy_last, snapshot.dxy_change_pct_5d = _safe_last_and_change(DATA_CONFIG.dxy_ticker, is_diff=False)
+    snapshot.us10y_yield_last, snapshot.us10y_change_5d = _safe_last_and_change(DATA_CONFIG.yield_ticker, is_diff=True)
+    snapshot.crude_oil_last, snapshot.crude_oil_change_pct_5d = _safe_last_and_change(DATA_CONFIG.oil_ticker, is_diff=False)
     snapshot.notes = notes
     return snapshot
